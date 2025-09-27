@@ -2,9 +2,6 @@ import ifcopenshell
 import ifcopenshell.geom
 import collections
 
-ifc_file_path = "/Users/lisanneput/Desktop/2025-2026/Semester 1/BIM/25-16-D-ARCH.ifc"
-ifc = ifcopenshell.open(ifc_file_path)
-
 def get_area_from_properties(element):
     # Try common property names
     for prop_name in ["Area", "NetSideArea", "NetArea"]:
@@ -24,7 +21,6 @@ def get_area_from_properties(element):
                                 return float(p.NominalValue.wrappedValue)
     return 0
 
-# Helper to check if wall is external
 def is_external_wall(wall):
     excluded_names = [
         "ifcWall/ Basic Wall: Exterior - 515mm Woood/ Insulation- fa.004",
@@ -54,9 +50,6 @@ def is_external_wall(wall):
             return True
     return False
 
-
-
-# Helper to get bounding box of an element
 def get_bounding_box(element):
     try:
         settings = ifcopenshell.geom.settings()
@@ -66,7 +59,6 @@ def get_bounding_box(element):
     except Exception:
         return None
 
-# Helper to check if two bounding boxes overlap
 def bboxes_overlap(b1, b2):
     return (
         b1[0] < b2[3] and b1[3] > b2[0] and # x overlap
@@ -74,32 +66,34 @@ def bboxes_overlap(b1, b2):
         b1[2] < b2[5] and b1[5] > b2[2]     # z overlap
     )
 
-external_walls = [wall for wall in ifc.by_type("IfcWall") if is_external_wall(wall)]
-unique_walls = []
-wall_bboxes = []
-for wall in external_walls:
-    bbox = get_bounding_box(wall)
-    if bbox is None:
-        unique_walls.append(wall)
-        continue
-    overlap = False
-    for other_bbox in wall_bboxes:
-        if bboxes_overlap(bbox, other_bbox):
-            overlap = True
-            break
-    if not overlap:
-        unique_walls.append(wall)
-        wall_bboxes.append(bbox)
+def checkRule(model):
+    external_walls = [wall for wall in model.by_type("IfcWall") if is_external_wall(wall)]
+    unique_walls = []
+    wall_bboxes = []
+    for wall in external_walls:
+        bbox = get_bounding_box(wall)
+        if bbox is None:
+            unique_walls.append(wall)
+            continue
+        overlap = False
+        for other_bbox in wall_bboxes:
+            if bboxes_overlap(bbox, other_bbox):
+                overlap = True
+                break
+        if not overlap:
+            unique_walls.append(wall)
+            wall_bboxes.append(bbox)
 
-facade_area = sum(get_area_from_properties(wall) for wall in unique_walls)
-window_area = sum(get_area_from_properties(window) for window in ifc.by_type("IfcWindow"))
+    facade_area = sum(get_area_from_properties(wall) for wall in unique_walls)
+    window_area = sum(get_area_from_properties(window) for window in model.by_type("IfcWindow"))
 
-if facade_area > 0:
-    transparency = (window_area / facade_area) * 100
-else:
-    transparency = 0
+    if facade_area > 0:
+        transparency = (window_area / facade_area) * 100
+    else:
+        transparency = 0
 
-print("Facade surface area (from properties):", facade_area)
-print("Window surface area (from properties):", window_area)
-print("Average facade transparency: {:.2f}%".format(transparency))
-
+    return {
+        "Facade surface area": facade_area,
+        "Window surface area": window_area,
+        "Average facade transparency (%)": round(transparency, 2)
+    }
