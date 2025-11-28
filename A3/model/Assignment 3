@@ -1,0 +1,200 @@
+
+import pandas as pd
+import math
+
+# =======================================================
+# CONFIGURATION
+# =======================================================
+
+BR18_REQUIREMENTS = {
+    "door_min_width": 0.9,      # meters
+    "stair_min_width": 1.2,     # meters
+    "corridor_min_width": 1.2   # meters
+}
+
+
+# =======================================================
+# STEP 1: Retrieve source model
+# =======================================================
+
+from pathlib import Path
+import ifcopenshell
+
+modelname = "25-16-D-ARCH.ifc"
+
+try:
+    dir_path = Path(__file__).parent
+    model_url = Path.joinpath(dir_path, 'model', modelname).with_suffix('.ifc')
+    model = ifcopenshell.open(model_url)
+except OSError:
+    try:
+        import bpy
+        model_url = Path.joinpath(Path(bpy.context.space_data.text.filepath).parent, 'model', modelname).with_suffix('.ifc')
+        model = ifcopenshell.open(model_url)
+    except OSError:
+        print(f"ERROR: please check your model folder : {model_url} does not exist")
+
+
+
+# =======================================================
+# STEP 2: Look for fire evacuation elements
+# =======================================================
+
+def find_fire_evacuation_elements(model):
+    print("STEP 2: Look for fire evacuation elements (IfcSpaces, IfcDoors, IfcStairs, IfcWalls)")
+    elements = {
+        "doors": model.by_type("IfcDoor"),
+        "stairs": model.by_type("IfcStair"),
+        "spaces": model.by_type("IfcSpace"),
+        "walls": model.by_type("IfcWall"),
+    }
+    print(f"→ Found {len(elements['doors'])} doors, {len(elements['stairs'])} stairs, {len(elements['spaces'])} spaces")
+    return elements
+
+
+# =======================================================
+# STEP 3: Extract door parameters
+# =======================================================
+
+def extract_door_parameters(doors):
+    print("STEP 3: Extract door parameters (door width, swing)")
+    data = []
+    for door in doors:
+        width = None
+        if getattr(door, "OverallWidth", None):
+            width = door.OverallWidth / 1000.0  # mm → m
+
+        data.append({
+            "id": door.GlobalId,
+            "name": door.Name or f"Door_{door.GlobalId[:8]}",
+            "width_m": width
+        })
+    return pd.DataFrame(data)
+
+
+# =======================================================
+# STEP 4: Extract stairs parameters
+# =======================================================
+
+def extract_stair_parameters(stairs):
+    print("STEP 4: Extract stair parameters (stair width, compartmentation)")
+    data = []
+    for stair in stairs:
+        width = None
+        if getattr(stair, "OverallWidth", None):
+            width = stair.OverallWidth / 1000.0
+        data.append({
+            "id": stair.GlobalId,
+            "name": stair.Name or f"Stair_{stair.GlobalId[:8]}",
+            "width_m": width
+        })
+    return pd.DataFrame(data)
+
+
+# =======================================================
+# STEP 5: Determine elongated, narrow spaces (corridor detection)
+# =======================================================
+
+def determine_corridors(spaces):
+    print("STEP 5: Determine elongated, narrow spaces (automatic corridor detection)")
+    corridors = []
+
+    for space in spaces:
+        props = {}
+        name = str(space.Name or "")
+        long_dim, short_dim = None, None
+
+        # Extract properties from IfcPropertySets
+        for rel in getattr(space, "IsDefinedBy", []):
+            if rel.is_a("IfcRelDefinesByProperties"):
+                prop_set = rel.RelatingPropertyDefinition
+                if prop_set.is_a("IfcPropertySet"):
+                    for prop in prop_set.HasProperties:
+                        if prop.Name.lower() in ["length", "width"]:
+                            props[prop.Name.lower()] = prop.NominalValue.wrappedValue
+
+        # Determine corridor characteristics
+        if "length" in props and "width" in props:
+            long_dim = max(props["length"], props["width"])
+            short_dim = min(props["length"], props["width"])
+
+            # Corridor rule: elongated (L/W > 3) and narrow (width < 3.0m)
+            if long_dim / short_dim > 3 and short_dim < 3.0:
+                corridors.append({
+                    "id": space.GlobalId,
+                    "name": name or f"Corridor_{space.GlobalId[:8]}",
+                    "width_m": short_dim
+                })
+
+    print(f"→ Detected {len(corridors)} corridor-like spaces")
+    return pd.DataFrame(corridors)
+
+
+# =======================================================
+# STEP 6: Check parameter requirements (BR18)
+# =======================================================
+
+def check_parameter_requirements(doors, stairs, corridors):
+    print("STEP 6: Check parameter requirements (BR18)")
+    issues = []
+
+    # --- Doors ---
+    for _, row in doors.iterrows():
+        if row["width_m"] and row["width_m"] < BR18_REQUIREMENTS["door_min_width"]:
+            issues.append(f"Door '{row['name']}' too narrow ({row['width_m']}m)")
+
+    # --- Stairs ---
+    for _, row in stairs.iterrows():
+        if row["width_m"] and row["width_m"] < BR18_REQUIREMENTS["stair_min_width"]:
+            issues.append(f"Stair '{row['name']}' too narrow ({row['width_m']}m)")
+
+    # --- Corridors ---
+    for _, row in corridors.iterrows():
+        if row["width_m"] and row["width_m"] < BR18_REQUIREMENTS["corridor_min_width"]:
+            issues.append(f"Corridor '{row['name']}' too narrow ({row['width_m']}m)")
+
+    return issues
+
+
+# =======================================================
+# STEP 7: Documentation of the report
+# =======================================================
+
+def generate_report(issues, output="fire_evacuation_report.txt"):
+    print("STEP 7: Documentation of the report")
+    print(f"→ Generating report → {output}")
+
+    with open(output, "w", encoding="utf-8") as f:
+        if not issues:
+            f.write("✅ No issues found. All elements meet BR18 requirements.\n")
+        else:
+            f.write("⚠️ Fire Evacuation Issues Detected:\n")
+            for issue in issues:
+                f.write(f"- {issue}\n")
+
+    print("→ Report complete.")
+
+
+# =======================================================
+# MAIN PROCESS
+# =======================================================
+
+def main():
+    print("=== FIRE EVACUATION CLAIM CHECK ===")
+    ifc_path = "path/to/your_model.ifc"  # 👈 vervang dit met jouw IFC-bestand
+
+    model = retrieve_source_model(ifc_path)
+    elements = find_fire_evacuation_elements(model)
+
+    doors_df = extract_door_parameters(elements["doors"])
+    stairs_df = extract_stair_parameters(elements["stairs"])
+    corridors_df = determine_corridors(elements["spaces"])
+
+    issues = check_parameter_requirements(doors_df, stairs_df, corridors_df)
+    generate_report(issues)
+
+    print("=== PROCESS COMPLETED ===")
+
+
+if __name__ == "__main__":
+    main()
